@@ -12,6 +12,9 @@
 已落地的 v0 规格文档（由你的策划稿整理而来）：
 - `wechat-mini-game-checklist/spec_v0.md`
 
+已拟定的 v0 数值文档（可直接实现，体验后再迭代）：
+- `wechat-mini-game-checklist/balance_v0.md`
+
 ---
 
 ## 0. 账号与平台准备（必须先做）
