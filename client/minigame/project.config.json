@@ -1,0 +1,12 @@
+{
+  "miniprogramRoot": "./",
+  "projectname": "survivorlike",
+  "description": "SurvivorLike Multiplayer WeChat Mini Game",
+  "appid": "wx7e3d26af6ef85a1a",
+  "setting": {
+    "compileHotReLoad": true,
+    "useCompilerPlugins": false,
+    "urlCheck": false
+  }
+}
+

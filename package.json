@@ -1,0 +1,13 @@
+{
+  "name": "survivorlike-multiplayer-game",
+  "private": true,
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "typecheck": "npm -w client run typecheck && npm -w server run typecheck",
+    "build": "npm -w client run build:wechat && npm -w server run build"
+  }
+}
+

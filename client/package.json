@@ -1,0 +1,19 @@
+{
+  "name": "survivorlike-wechat-client",
+  "private": true,
+  "version": "0.1.0",
+  "type": "commonjs",
+  "scripts": {
+    "build:wechat": "node scripts/build-wechat.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "phaser": "^3.90.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.5",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.3"
+  }
+}
+
