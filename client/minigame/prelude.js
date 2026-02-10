@@ -39,21 +39,65 @@
     return { style: {} };
   }
 
+  function ensureDocumentElement(doc) {
+    /** @type {any} */
+    let de;
+    try {
+      de = doc.documentElement;
+    } catch (e) {
+      de = undefined;
+    }
+
+    if (!de) {
+      de = { style: {}, clientWidth: 0, clientHeight: 0 };
+      // Some runtimes may expose a read-only `documentElement`. Try to override safely.
+      try {
+        doc.documentElement = de;
+      } catch (e) {
+        // ignore
+      }
+      try {
+        if (!doc.documentElement) {
+          Object.defineProperty(doc, "documentElement", { value: de, configurable: true });
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    // Ensure style exists without assuming writeable property.
+    try {
+      if (de && !de.style) de.style = {};
+    } catch (e) {
+      // ignore
+    }
+
+    return de || { style: {} };
+  }
+
   if (!g.document) {
-    g.document = {
-      body: {},
-      documentElement: { style: {} },
-      createElement,
-      addEventListener() {},
-      removeEventListener() {}
-    };
-  } else {
+    g.document = {};
+  }
+
+  // Don't assume we can freely mutate built-in document; guard everything.
+  try {
     g.document.body = g.document.body || {};
-    g.document.documentElement = g.document.documentElement || {};
-    g.document.documentElement.style = g.document.documentElement.style || {};
-    g.document.createElement = g.document.createElement || createElement;
-    g.document.addEventListener = g.document.addEventListener || function () {};
-    g.document.removeEventListener = g.document.removeEventListener || function () {};
+  } catch (e) {
+    // ignore
+  }
+
+  ensureDocumentElement(g.document);
+
+  try {
+    if (!g.document.createElement) g.document.createElement = createElement;
+  } catch (e) {
+    // ignore
+  }
+  try {
+    if (!g.document.addEventListener) g.document.addEventListener = function () {};
+    if (!g.document.removeEventListener) g.document.removeEventListener = function () {};
+  } catch (e) {
+    // ignore
   }
 
   g.window.addEventListener = g.window.addEventListener || function () {};
