@@ -2,9 +2,16 @@
 // Phaser probes `document.documentElement` very early.
 (function () {
   const g = /** @type {any} */ (globalThis);
-  g.window = g.window || g;
-  g.self = g.self || g.window;
-  g.global = g.global || g.window;
+  // In WeChat DevTools, `window` may be a read-only getter. Never assign unless missing.
+  try {
+    if (typeof g.window === "undefined") g.window = g;
+  } catch (e) {}
+  try {
+    if (typeof g.self === "undefined") g.self = g.window || g;
+  } catch (e) {}
+  try {
+    if (typeof g.global === "undefined") g.global = g.window || g;
+  } catch (e) {}
 
   g.navigator = g.navigator || { userAgent: "wechat-minigame", maxTouchPoints: 10 };
   g.location = g.location || { href: "wxgame://local" };
@@ -119,7 +126,12 @@
     // ignore
   }
 
-  g.window.addEventListener = g.window.addEventListener || function () {};
-  g.window.removeEventListener = g.window.removeEventListener || function () {};
+  // Some runtimes also guard add/removeEventListener as read-only.
+  try {
+    g.window.addEventListener = g.window.addEventListener || function () {};
+  } catch (e) {}
+  try {
+    g.window.removeEventListener = g.window.removeEventListener || function () {};
+  } catch (e) {}
 })();
 

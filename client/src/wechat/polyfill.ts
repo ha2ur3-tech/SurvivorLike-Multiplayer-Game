@@ -11,13 +11,26 @@ declare const wx: WxApi | undefined;
 
 export function initWechatPolyfill() {
   const g: any = globalThis as any;
-  g.window = g.window ?? g;
-  g.self = g.self ?? g.window;
-  g.global = g.global ?? g.window;
+  // In WeChat DevTools, `window` may be a read-only getter. Only assign when missing.
+  try {
+    if (typeof g.window === "undefined") g.window = g;
+  } catch {}
+  try {
+    if (typeof g.self === "undefined") g.self = g.window ?? g;
+  } catch {}
+  try {
+    if (typeof g.global === "undefined") g.global = g.window ?? g;
+  } catch {}
 
-  g.navigator = g.navigator ?? { userAgent: "wechat-minigame" };
-  g.location = g.location ?? { href: "wxgame://local" };
-  g.performance = g.performance ?? { now: () => Date.now() };
+  try {
+    g.navigator = g.navigator ?? { userAgent: "wechat-minigame", maxTouchPoints: 10 };
+  } catch {}
+  try {
+    g.location = g.location ?? { href: "wxgame://local" };
+  } catch {}
+  try {
+    g.performance = g.performance ?? { now: () => Date.now() };
+  } catch {}
 
   // requestAnimationFrame / cancelAnimationFrame exist in most runtimes.
   g.requestAnimationFrame = g.requestAnimationFrame ?? ((cb: any) => setTimeout(() => cb(Date.now()), 16));
