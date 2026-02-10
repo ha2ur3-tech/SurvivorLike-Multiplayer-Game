@@ -18,6 +18,10 @@ const config: Phaser.Types.Core.GameConfig = {
   canvas: canvas as any,
   parent: undefined,
   scene: [BootScene, MainMenuScene, RoomScene, GameScene],
+  audio: {
+    // v0: disable audio to avoid WebAudio/DOM adapter issues in minigame runtime.
+    noAudio: true
+  },
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH
