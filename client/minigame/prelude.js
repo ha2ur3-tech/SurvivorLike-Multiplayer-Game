@@ -31,6 +31,25 @@
     };
   }
 
+  // Phaser and other libs may probe DOM constructors via `instanceof`.
+  // WeChat minigame doesn't provide these, so we alias them to runtime equivalents.
+  if (!g.HTMLElement) {
+    g.HTMLElement = function HTMLElement() {};
+  }
+  if (!g.HTMLCanvasElement) {
+    // If wx.createCanvas() provides a constructor, reuse it so `canvas instanceof HTMLCanvasElement` works.
+    g.HTMLCanvasElement = canvas && canvas.constructor ? canvas.constructor : function HTMLCanvasElement() {};
+  }
+  if (!g.HTMLImageElement) {
+    g.HTMLImageElement = g.Image;
+  }
+  if (!g.OffscreenCanvas) {
+    g.OffscreenCanvas = g.HTMLCanvasElement;
+  }
+  if (!g.CanvasRenderingContext2D) {
+    g.CanvasRenderingContext2D = function CanvasRenderingContext2D() {};
+  }
+
   function createElement(tag) {
     const t = String(tag).toLowerCase();
     if (t === "canvas") return canvas || {};
