@@ -1,4 +1,4 @@
-import Phaser from "phaser";
+import Phaser from "../../phaser-global";
 import { COLORS } from "../constants";
 
 export function makeLabel(scene: Phaser.Scene, x: number, y: number, text: string, fontSize = 28) {

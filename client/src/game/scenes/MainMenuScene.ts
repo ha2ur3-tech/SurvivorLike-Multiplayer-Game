@@ -1,4 +1,4 @@
-import Phaser from "phaser";
+import Phaser from "../../phaser-global";
 import { GAME_H, GAME_W, COLORS } from "../constants";
 import { makeButton, makeLabel, makePanel } from "../ui/widgets";
 import { clientState } from "../state/clientState";
