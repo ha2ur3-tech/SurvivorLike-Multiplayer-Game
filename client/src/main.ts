@@ -1,4 +1,4 @@
-import Phaser from "phaser";
+import Phaser from "./phaser-global";
 import { initWechatPolyfill } from "./wechat/polyfill";
 import { GAME_H, GAME_W } from "./game/constants";
 import { BootScene } from "./game/scenes/BootScene";
