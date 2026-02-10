@@ -22,6 +22,16 @@ async function buildAll() {
       js: [
         "var window = (typeof window !== 'undefined') ? window : globalThis;",
         "var document = window.document || (window.document = window.document || {});"
+        ,
+        // Bind DOM-like constructors into local scope to avoid ReferenceError in WeChat runtime.
+        "var HTMLElement = window.HTMLElement || function HTMLElement() {};",
+        "var HTMLCanvasElement = window.HTMLCanvasElement || function HTMLCanvasElement() {};",
+        "var HTMLImageElement = window.HTMLImageElement || function HTMLImageElement() {};",
+        "var OffscreenCanvas = window.OffscreenCanvas || HTMLCanvasElement;",
+        "var CanvasRenderingContext2D = window.CanvasRenderingContext2D || function CanvasRenderingContext2D() {};",
+        "var navigator = window.navigator || (window.navigator = { userAgent: 'wechat-minigame', maxTouchPoints: 10 });",
+        "var location = window.location || (window.location = { href: 'wxgame://local' });",
+        "var performance = window.performance || (window.performance = { now: function(){ return Date.now(); } });"
       ].join("")
     },
     mainFields: ["browser", "module", "main"],
