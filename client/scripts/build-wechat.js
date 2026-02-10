@@ -7,40 +7,45 @@ const outDir = path.resolve(root, "minigame", "js");
 
 fs.mkdirSync(outDir, { recursive: true });
 
-// Copy Phaser runtime (global build) to keep our bundle small.
-let phaserSrc;
-try {
-  const phaserPkgJson = require.resolve("phaser/package.json", { paths: [root] });
-  const phaserDir = path.dirname(phaserPkgJson);
-  phaserSrc = path.resolve(phaserDir, "dist", "phaser.min.js");
-} catch (e) {
-  // fallback for workspace-hoisted node_modules
-  phaserSrc = path.resolve(root, "..", "node_modules", "phaser", "dist", "phaser.min.js");
-}
-const phaserDst = path.resolve(outDir, "phaser.min.js");
-try {
-  fs.copyFileSync(phaserSrc, phaserDst);
-} catch (e) {
-  console.warn("Warning: failed to copy phaser.min.js:", e?.message || e);
-}
+async function buildAll() {
+  // 1) Build Phaser runtime into its own file, injecting `window/document` bindings
+  // so Phaser doesn't crash in WeChat's CommonJS-like wrapper.
+  await esbuild.build({
+    entryPoints: [path.resolve(root, "src", "phaser-runtime.ts")],
+    bundle: true,
+    platform: "browser",
+    format: "iife",
+    target: ["es2020"],
+    sourcemap: false,
+    minify: true,
+    banner: {
+      js: [
+        "var window = (typeof window !== 'undefined') ? window : globalThis;",
+        "var document = window.document || (window.document = window.document || {});"
+      ].join("")
+    },
+    mainFields: ["browser", "module", "main"],
+    conditions: ["browser", "default"],
+    outfile: path.resolve(outDir, "phaser.runtime.js")
+  });
 
-esbuild
-  .build({
+  // 2) Build game logic bundle (small)
+  await esbuild.build({
     entryPoints: [path.resolve(root, "src", "main.ts")],
     bundle: true,
     platform: "browser",
-    format: "cjs",
+    format: "iife",
     target: ["es2020"],
-    // WeChat DevTools may fail/lag when a single JS file is too large.
-    // Keep this bundle small and minified.
     sourcemap: false,
     minify: true,
     mainFields: ["browser", "module", "main"],
     conditions: ["browser", "default"],
     outfile: path.resolve(outDir, "bundle.js")
-  })
-  .catch((err) => {
-    console.error(err);
-    process.exit(1);
   });
+}
+
+buildAll().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
 

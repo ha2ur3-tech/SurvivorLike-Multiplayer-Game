@@ -9,4 +9,5 @@ project.private.config.json
 client/minigame/js/bundle.js
 client/minigame/js/bundle.js.map
 client/minigame/js/phaser.min.js
+client/minigame/js/phaser.runtime.js
 
