@@ -1,37 +1,482 @@
-import Phaser from "./phaser-global";
-import { initWechatPolyfill } from "./wechat/polyfill";
-import { GAME_H, GAME_W } from "./game/constants";
-import { BootScene } from "./game/scenes/BootScene";
-import { MainMenuScene } from "./game/scenes/MainMenuScene";
-import { RoomScene } from "./game/scenes/RoomScene";
-import { GameScene } from "./game/scenes/GameScene";
+/* eslint-disable @typescript-eslint/no-explicit-any */
+// WeChat Mini Game native-canvas UI (no Phaser, no DOM adapters).
+// Goal: make the project boot reliably and show MainMenu/JoinRoom/Room screens first.
 
-const { canvas } = initWechatPolyfill();
+declare const wx: any;
 
-// Note: In WeChat minigame, canvas is provided by wx.createCanvas().
-// In devtools or non-wechat environment, Phaser will create one automatically.
-const config: Phaser.Types.Core.GameConfig = {
-  type: Phaser.CANVAS,
-  width: GAME_W,
-  height: GAME_H,
-  backgroundColor: "#0b1020",
-  canvas: canvas as any,
-  parent: undefined,
-  scene: [BootScene, MainMenuScene, RoomScene, GameScene],
-  audio: {
-    // v0: disable audio to avoid WebAudio/DOM adapter issues in minigame runtime.
-    noAudio: true
-  },
-  scale: {
-    mode: Phaser.Scale.FIT,
-    autoCenter: Phaser.Scale.CENTER_BOTH
-  },
-  fps: {
-    target: 60,
-    forceSetTimeOut: false
-  }
+type AppScreen = "menu" | "join" | "room" | "ingame";
+
+type PlayerRow = {
+  name: string;
+  ready: boolean;
+  isLocal: boolean;
 };
 
-// eslint-disable-next-line no-new
-new Phaser.Game(config);
+type RoomState = {
+  code: string;
+  isHost: boolean;
+  meReady: boolean;
+  players: (PlayerRow | null)[]; // 4 slots
+  characterIndex: number;
+};
+
+const LOGICAL_W = 720;
+const LOGICAL_H = 1280;
+
+const COLORS = {
+  bg: "#0b1020",
+  panel: "rgba(19,32,58,0.85)",
+  panel2: "rgba(15,26,49,0.95)",
+  text: "#e8eefc",
+  muted: "#9fb0d0",
+  accent: "#4aa3ff",
+  danger: "#ff5a5a",
+  ok: "#4dff88"
+};
+
+function clamp(n: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, n));
+}
+
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+class Button {
+  constructor(
+    public x: number,
+    public y: number,
+    public w: number,
+    public h: number,
+    public text: string,
+    public onClick: () => void,
+    public enabled = true
+  ) {}
+
+  hit(px: number, py: number) {
+    return this.enabled && px >= this.x && px <= this.x + this.w && py >= this.y && py <= this.y + this.h;
+  }
+
+  draw(ctx: CanvasRenderingContext2D) {
+    ctx.save();
+    roundRect(ctx, this.x, this.y, this.w, this.h, 14);
+    ctx.fillStyle = this.enabled ? COLORS.accent : "rgba(74,163,255,0.35)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.18)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = COLORS.text;
+    ctx.font = "600 28px Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(this.text, this.x + this.w / 2, this.y + this.h / 2);
+    ctx.restore();
+  }
+}
+
+class App {
+  private canvas: any;
+  private ctx: CanvasRenderingContext2D;
+  private screen: AppScreen = "menu";
+  private joinInput = "";
+  private room: RoomState | null = null;
+
+  private viewW = 375;
+  private viewH = 667;
+  private dpr = 2;
+  private scale = 1;
+  private offX = 0;
+  private offY = 0;
+
+  private buttons: Button[] = [];
+
+  constructor() {
+    const sys = wx.getSystemInfoSync();
+    this.viewW = sys.windowWidth;
+    this.viewH = sys.windowHeight;
+    this.dpr = sys.pixelRatio || 2;
+
+    this.canvas = wx.createCanvas();
+    this.canvas.width = Math.floor(this.viewW * this.dpr);
+    this.canvas.height = Math.floor(this.viewH * this.dpr);
+    this.ctx = this.canvas.getContext("2d");
+
+    this.recalcViewport();
+
+    wx.onTouchStart((e: any) => {
+      const t = e.touches?.[0];
+      if (!t) return;
+      const p = this.toLogical(t.x, t.y);
+      this.handleTap(p.x, p.y);
+    });
+
+    this.loop();
+  }
+
+  private recalcViewport() {
+    this.scale = Math.min(this.viewW / LOGICAL_W, this.viewH / LOGICAL_H);
+    this.offX = (this.viewW - LOGICAL_W * this.scale) / 2;
+    this.offY = (this.viewH - LOGICAL_H * this.scale) / 2;
+  }
+
+  private toLogical(x: number, y: number) {
+    return {
+      x: (x - this.offX) / this.scale,
+      y: (y - this.offY) / this.scale
+    };
+  }
+
+  private setTransform() {
+    // map logical coords to real canvas pixels
+    const s = this.scale * this.dpr;
+    this.ctx.setTransform(s, 0, 0, s, this.offX * this.dpr, this.offY * this.dpr);
+  }
+
+  private loop = () => {
+    this.render();
+    wx.nextTick?.(() => {}); // keep runtime happy
+    requestAnimationFrame(this.loop);
+  };
+
+  private handleTap(x: number, y: number) {
+    for (const b of this.buttons) {
+      if (b.hit(x, y)) {
+        b.onClick();
+        return;
+      }
+    }
+  }
+
+  private render() {
+    // clear full physical canvas
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.ctx.fillStyle = "#000000";
+    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+    this.setTransform();
+    this.ctx.fillStyle = COLORS.bg;
+    this.ctx.fillRect(0, 0, LOGICAL_W, LOGICAL_H);
+
+    this.buttons = [];
+    if (this.screen === "menu") this.renderMenu();
+    else if (this.screen === "join") this.renderJoin();
+    else if (this.screen === "room") this.renderRoom();
+    else this.renderInGame();
+  }
+
+  private title(text: string, y: number) {
+    this.ctx.save();
+    this.ctx.fillStyle = COLORS.text;
+    this.ctx.font = "700 44px Arial";
+    this.ctx.textAlign = "center";
+    this.ctx.textBaseline = "middle";
+    this.ctx.fillText(text, LOGICAL_W / 2, y);
+    this.ctx.restore();
+  }
+
+  private panel(x: number, y: number, w: number, h: number) {
+    this.ctx.save();
+    roundRect(this.ctx, x, y, w, h, 18);
+    this.ctx.fillStyle = COLORS.panel;
+    this.ctx.fill();
+    this.ctx.strokeStyle = "rgba(255,255,255,0.10)";
+    this.ctx.lineWidth = 2;
+    this.ctx.stroke();
+    this.ctx.restore();
+  }
+
+  private renderMenu() {
+    this.title("SurvivorLike", 160);
+
+    this.panel(80, 260, 560, 420);
+    this.ctx.save();
+    this.ctx.fillStyle = COLORS.muted;
+    this.ctx.font = "500 22px Arial";
+    this.ctx.textAlign = "center";
+    this.ctx.fillText("v0：先把界面与流程跑通（无 Phaser）", LOGICAL_W / 2, 330);
+    this.ctx.restore();
+
+    const start = new Button(180, 400, 360, 82, "开始游戏（创建房间）", () => this.createRoom());
+    const join = new Button(180, 510, 360, 82, "加入房间", () => {
+      this.joinInput = "";
+      this.screen = "join";
+    });
+    this.buttons.push(start, join);
+    start.draw(this.ctx);
+    join.draw(this.ctx);
+  }
+
+  private renderJoin() {
+    this.title("加入房间", 160);
+    this.panel(60, 230, 600, 720);
+
+    // input box
+    this.ctx.save();
+    roundRect(this.ctx, 140, 290, 440, 68, 12);
+    this.ctx.fillStyle = COLORS.panel2;
+    this.ctx.fill();
+    this.ctx.strokeStyle = "rgba(255,255,255,0.12)";
+    this.ctx.lineWidth = 2;
+    this.ctx.stroke();
+    this.ctx.fillStyle = this.joinInput.length ? COLORS.text : COLORS.muted;
+    this.ctx.font = "600 30px Arial";
+    this.ctx.textAlign = "center";
+    this.ctx.textBaseline = "middle";
+    this.ctx.fillText(this.joinInput.length ? this.joinInput : "请输入六位房间号", LOGICAL_W / 2, 324);
+    this.ctx.restore();
+
+    // keypad
+    const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "⌫", "0", "确定"];
+    const startX = 140;
+    const startY = 400;
+    const gap = 14;
+    const bw = 132;
+    const bh = 82;
+    for (let i = 0; i < keys.length; i++) {
+      const row = Math.floor(i / 3);
+      const col = i % 3;
+      const x = startX + col * (bw + gap);
+      const y = startY + row * (bh + gap);
+      const label = keys[i];
+      const enabled = label !== "确定" || this.joinInput.length === 6;
+      const b = new Button(
+        x,
+        y,
+        bw,
+        bh,
+        label,
+        () => {
+          if (label === "⌫") this.joinInput = this.joinInput.slice(0, -1);
+          else if (label === "确定") this.joinRoom();
+          else if (this.joinInput.length < 6) this.joinInput += label;
+        },
+        enabled
+      );
+      this.buttons.push(b);
+      b.draw(this.ctx);
+    }
+
+    const cancel = new Button(140, 860, 210, 72, "取消", () => (this.screen = "menu"));
+    this.buttons.push(cancel);
+    cancel.draw(this.ctx);
+  }
+
+  private renderRoom() {
+    if (!this.room) {
+      this.screen = "menu";
+      return;
+    }
+    const room = this.room;
+
+    this.title(`房间号：${room.code}`, 120);
+
+    // left player list
+    this.panel(40, 220, 260, 720);
+    this.ctx.save();
+    this.ctx.fillStyle = COLORS.muted;
+    this.ctx.font = "600 22px Arial";
+    this.ctx.textAlign = "center";
+    this.ctx.fillText("玩家列表", 170, 260);
+    this.ctx.restore();
+
+    for (let i = 0; i < 4; i++) {
+      const y = 310 + i * 150;
+      this.drawPlayerSlot(60, y, i);
+    }
+
+    // character select (3 visible)
+    this.panel(330, 220, 350, 560);
+    this.ctx.save();
+    this.ctx.fillStyle = COLORS.muted;
+    this.ctx.font = "600 22px Arial";
+    this.ctx.textAlign = "center";
+    this.ctx.fillText("选择角色", 505, 260);
+    this.ctx.restore();
+
+    const left = new Button(355, 480, 64, 64, "<", () => (room.characterIndex = (room.characterIndex + 4) % 5));
+    const right = new Button(591, 480, 64, 64, ">", () => (room.characterIndex = (room.characterIndex + 1) % 5));
+    this.buttons.push(left, right);
+    left.draw(this.ctx);
+    right.draw(this.ctx);
+
+    // center card
+    const cardX = 435;
+    const cardY = 360;
+    this.ctx.save();
+    roundRect(this.ctx, cardX, cardY, 140, 140, 16);
+    this.ctx.fillStyle = "rgba(255,255,255,0.08)";
+    this.ctx.fill();
+    this.ctx.strokeStyle = "rgba(255,255,255,0.14)";
+    this.ctx.lineWidth = 2;
+    this.ctx.stroke();
+    this.ctx.fillStyle = COLORS.text;
+    this.ctx.font = "700 26px Arial";
+    this.ctx.textAlign = "center";
+    this.ctx.textBaseline = "middle";
+    this.ctx.fillText(`角色 ${room.characterIndex + 1}`, cardX + 70, cardY + 70);
+    this.ctx.restore();
+
+    // bottom button
+    const label = room.isHost ? "开始游戏" : room.meReady ? "取消准备" : "准备";
+    const enabled = room.isHost ? this.allGuestsReady() : true;
+    const action = new Button(
+      330,
+      820,
+      350,
+      82,
+      label,
+      () => {
+        if (room.isHost) {
+          if (!this.allGuestsReady()) return;
+          this.screen = "ingame";
+        } else {
+          room.meReady = !room.meReady;
+          const me = room.players.find((p) => p?.isLocal);
+          if (me) me.ready = room.meReady;
+        }
+      },
+      enabled
+    );
+    this.buttons.push(action);
+    action.draw(this.ctx);
+
+    const back = new Button(40, 40, 160, 64, "返回", () => {
+      this.room = null;
+      this.screen = "menu";
+    });
+    this.buttons.push(back);
+    back.draw(this.ctx);
+  }
+
+  private drawPlayerSlot(x: number, y: number, idx: number) {
+    if (!this.room) return;
+    const slot = this.room.players[idx];
+    this.ctx.save();
+    roundRect(this.ctx, x, y, 220, 120, 14);
+    this.ctx.fillStyle = "rgba(15,26,49,0.9)";
+    this.ctx.fill();
+    this.ctx.strokeStyle = "rgba(255,255,255,0.10)";
+    this.ctx.lineWidth = 2;
+    this.ctx.stroke();
+
+    if (!slot) {
+      // plus icon
+      this.ctx.fillStyle = "rgba(255,255,255,0.18)";
+      this.ctx.beginPath();
+      this.ctx.arc(x + 46, y + 60, 22, 0, Math.PI * 2);
+      this.ctx.fill();
+      this.ctx.fillStyle = COLORS.text;
+      this.ctx.font = "700 28px Arial";
+      this.ctx.textAlign = "center";
+      this.ctx.textBaseline = "middle";
+      this.ctx.fillText("+", x + 46, y + 60);
+
+      this.ctx.fillStyle = COLORS.muted;
+      this.ctx.font = "600 22px Arial";
+      this.ctx.textAlign = "left";
+      this.ctx.fillText("--", x + 82, y + 52);
+
+      // clickable area on avatar
+      const b = new Button(x + 24, y + 38, 44, 44, "", () => this.shareInvite());
+      b.enabled = true;
+      this.buttons.push(b);
+      return;
+    }
+
+    // avatar placeholder
+    this.ctx.fillStyle = slot.isLocal ? "rgba(74,163,255,0.35)" : "rgba(255,255,255,0.10)";
+    this.ctx.beginPath();
+    this.ctx.arc(x + 46, y + 60, 22, 0, Math.PI * 2);
+    this.ctx.fill();
+
+    this.ctx.fillStyle = COLORS.text;
+    this.ctx.font = "700 22px Arial";
+    this.ctx.textAlign = "left";
+    this.ctx.fillText(slot.name, x + 82, y + 52);
+
+    this.ctx.fillStyle = slot.ready ? COLORS.ok : COLORS.danger;
+    this.ctx.font = "600 20px Arial";
+    this.ctx.fillText(slot.ready ? "已准备" : "未准备", x + 82, y + 82);
+    this.ctx.restore();
+  }
+
+  private renderInGame() {
+    this.title("局内占位", 160);
+    this.ctx.save();
+    this.ctx.fillStyle = COLORS.muted;
+    this.ctx.font = "500 24px Arial";
+    this.ctx.textAlign = "center";
+    this.ctx.fillText("下一步接入联机与玩法系统", LOGICAL_W / 2, 220);
+    this.ctx.restore();
+
+    const back = new Button(180, 560, 360, 82, "结束（回房间）", () => (this.screen = "room"));
+    this.buttons.push(back);
+    back.draw(this.ctx);
+  }
+
+  private createRoom() {
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    this.room = {
+      code,
+      isHost: true,
+      meReady: true,
+      characterIndex: 0,
+      players: [
+        { name: "你", ready: true, isLocal: true },
+        null,
+        null,
+        null
+      ]
+    };
+    this.screen = "room";
+  }
+
+  private joinRoom() {
+    const code = this.joinInput;
+    if (code.length !== 6) return;
+    // v0：离线模拟加入。后续接入联机后替换为服务端 join。
+    this.room = {
+      code,
+      isHost: false,
+      meReady: false,
+      characterIndex: 0,
+      players: [
+        { name: "房主", ready: true, isLocal: false },
+        { name: "你", ready: false, isLocal: true },
+        null,
+        null
+      ]
+    };
+    this.screen = "room";
+  }
+
+  private allGuestsReady() {
+    if (!this.room) return false;
+    // host fixed ready; check all non-null others.
+    return this.room.players.every((p) => !p || p.isLocal || p.ready);
+  }
+
+  private shareInvite() {
+    if (!this.room) return;
+    try {
+      wx.shareAppMessage?.({
+        title: `来联机！房间号：${this.room.code}`,
+        query: `roomCode=${this.room.code}`
+      });
+    } catch {
+      // fallback
+      wx.showToast?.({ title: "分享不可用（开发工具模拟器限制）", icon: "none" });
+    }
+  }
+}
+
+// Boot
+new App();
 
