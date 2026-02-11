@@ -4,7 +4,7 @@
 
 declare const wx: any;
 
-type AppScreen = "menu" | "join" | "room" | "ingame";
+type AppScreen = "menu" | "join" | "room" | "ingame" | "server";
 
 type PlayerRow = {
   name: string;
@@ -91,6 +91,9 @@ class App {
   private ws: import("./net/wsClient").WsClient | null = null;
   private netError: string | null = null;
   private connecting = false;
+  private serverHost = "127.0.0.1";
+  private serverHostInput = "";
+  private lastTap?: { x: number; y: number; t: number };
 
   private viewW = 375;
   private viewH = 667;
@@ -114,25 +117,32 @@ class App {
 
     this.recalcViewport();
 
-    wx.onTouchStart((e: any) => {
-      const t = e.touches?.[0];
-      if (!t) return;
-      const p = this.toLogical(t.x, t.y);
+    // Touch handling: DevTools / device may provide different coordinate fields.
+    const onTapEvent = (e: any) => {
+      const t = (e.changedTouches && e.changedTouches[0]) || (e.touches && e.touches[0]) || e;
+      const xy = this.extractXY(t);
+      if (!xy) return;
+      const p = this.toLogical(xy.x, xy.y);
+      this.lastTap = { x: p.x, y: p.y, t: Date.now() };
       this.handleTap(p.x, p.y);
-    });
+    };
+    // Some environments only fire touchend reliably for clicks.
+    wx.onTouchStart?.(onTapEvent);
+    wx.onTouchEnd?.(onTapEvent);
 
     this.applyLaunchQuery(wx.getLaunchOptionsSync?.()?.query);
     wx.onShow?.((e: any) => this.applyLaunchQuery(e?.query));
+
+    // Load server host from storage (only host part, easier for mobile input).
+    const host = wx.getStorageSync?.("serverHost");
+    if (host) this.serverHost = String(host);
 
     this.loop();
   }
 
   private serverUrl() {
-    // v0 defaults:
-    // - DevTools: ws://127.0.0.1:2567/ws
-    // - Real phone testing: change to ws://<你的电脑局域网IP>:2567/ws or deploy wss later.
-    const cfg = wx.getStorageSync?.("serverUrl");
-    return (cfg && String(cfg)) || "ws://127.0.0.1:2567/ws";
+    const host = this.serverHost || "127.0.0.1";
+    return `ws://${host}:2567/ws`;
   }
 
   private applyLaunchQuery(query: any) {
@@ -161,6 +171,21 @@ class App {
     };
   }
 
+  private extractXY(t: any): { x: number; y: number } | null {
+    let x: any = t?.x;
+    let y: any = t?.y;
+    if (typeof x !== "number") x = t?.clientX ?? t?.pageX ?? t?.screenX;
+    if (typeof y !== "number") y = t?.clientY ?? t?.pageY ?? t?.screenY;
+    if (typeof x !== "number" || typeof y !== "number") return null;
+
+    // Some runtimes provide touch coordinates in physical pixels (scaled by DPR).
+    if (x > this.viewW + 1 || y > this.viewH + 1) {
+      x = x / this.dpr;
+      y = y / this.dpr;
+    }
+    return { x, y };
+  }
+
   private setTransform() {
     // map logical coords to real canvas pixels
     const s = this.scale * this.dpr;
@@ -170,7 +195,8 @@ class App {
   private loop = () => {
     this.render();
     wx.nextTick?.(() => {}); // keep runtime happy
-    requestAnimationFrame(this.loop);
+    const raf = (globalThis as any).requestAnimationFrame ?? ((cb: any) => setTimeout(() => cb(Date.now()), 16));
+    raf(this.loop);
   };
 
   private handleTap(x: number, y: number) {
@@ -196,7 +222,22 @@ class App {
     if (this.screen === "menu") this.renderMenu();
     else if (this.screen === "join") this.renderJoin();
     else if (this.screen === "room") this.renderRoom();
+    else if (this.screen === "server") this.renderServer();
     else this.renderInGame();
+
+    // dev hint: show last tap coords (helps debug "can't click")
+    if (this.lastTap && Date.now() - this.lastTap.t < 1500) {
+      this.ctx.save();
+      this.ctx.fillStyle = "rgba(0,0,0,0.35)";
+      roundRect(this.ctx, 20, LOGICAL_H - 90, 320, 60, 10);
+      this.ctx.fill();
+      this.ctx.fillStyle = COLORS.muted;
+      this.ctx.font = "500 18px Arial";
+      this.ctx.textAlign = "left";
+      this.ctx.textBaseline = "middle";
+      this.ctx.fillText(`tap: ${this.lastTap.x.toFixed(0)}, ${this.lastTap.y.toFixed(0)}`, 40, LOGICAL_H - 60);
+      this.ctx.restore();
+    }
   }
 
   private title(text: string, y: number) {
@@ -236,6 +277,10 @@ class App {
       this.joinInput = "";
       this.screen = "join";
     });
+    const server = new Button(180, 620, 360, 70, "服务器设置", () => {
+      this.serverHostInput = this.serverHost;
+      this.screen = "server";
+    });
     // net hint
     this.ctx.save();
     this.ctx.fillStyle = this.netError ? COLORS.danger : COLORS.muted;
@@ -248,9 +293,10 @@ class App {
     );
     this.ctx.restore();
 
-    this.buttons.push(start, join);
+    this.buttons.push(start, join, server);
     start.draw(this.ctx);
     join.draw(this.ctx);
+    server.draw(this.ctx);
   }
 
   private renderJoin() {
@@ -302,6 +348,97 @@ class App {
       this.buttons.push(b);
       b.draw(this.ctx);
     }
+
+    const cancel = new Button(140, 860, 210, 72, "取消", () => (this.screen = "menu"));
+    this.buttons.push(cancel);
+    cancel.draw(this.ctx);
+  }
+
+  private renderServer() {
+    this.title("服务器设置", 160);
+    this.panel(60, 230, 600, 720);
+
+    this.ctx.save();
+    this.ctx.fillStyle = COLORS.muted;
+    this.ctx.font = "500 20px Arial";
+    this.ctx.textAlign = "center";
+    this.ctx.fillText("填你的电脑局域网 IP（例如 192.168.1.8）", LOGICAL_W / 2, 255);
+    this.ctx.restore();
+
+    // input box
+    this.ctx.save();
+    roundRect(this.ctx, 140, 290, 440, 68, 12);
+    this.ctx.fillStyle = COLORS.panel2;
+    this.ctx.fill();
+    this.ctx.strokeStyle = "rgba(255,255,255,0.12)";
+    this.ctx.lineWidth = 2;
+    this.ctx.stroke();
+    this.ctx.fillStyle = this.serverHostInput.length ? COLORS.text : COLORS.muted;
+    this.ctx.font = "600 28px Arial";
+    this.ctx.textAlign = "center";
+    this.ctx.textBaseline = "middle";
+    this.ctx.fillText(this.serverHostInput.length ? this.serverHostInput : "127.0.0.1", LOGICAL_W / 2, 324);
+    this.ctx.restore();
+
+    // keypad: digits + dot + backspace + save
+    const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫", "保存"];
+    const startX = 140;
+    const startY = 400;
+    const gap = 14;
+    const bw = 132;
+    const bh = 82;
+
+    for (let i = 0; i < 12; i++) {
+      const row = Math.floor(i / 3);
+      const col = i % 3;
+      const x = startX + col * (bw + gap);
+      const y = startY + row * (bh + gap);
+      const label = keys[i];
+      const b = new Button(
+        x,
+        y,
+        bw,
+        bh,
+        label,
+        () => {
+          if (label === "⌫") this.serverHostInput = this.serverHostInput.slice(0, -1);
+          else if (label === ".") {
+            if (this.serverHostInput.length < 15) this.serverHostInput += ".";
+          } else {
+            if (this.serverHostInput.length < 15) this.serverHostInput += label;
+          }
+        },
+        true
+      );
+      this.buttons.push(b);
+      b.draw(this.ctx);
+    }
+
+    const saveEnabled = /^\d{1,3}(\.\d{1,3}){3}$/.test(this.serverHostInput) || this.serverHostInput === "127.0.0.1";
+    const save = new Button(
+      140,
+      760,
+      440,
+      82,
+      `保存（${this.serverUrl()}）`,
+      () => {
+        if (!saveEnabled) {
+          wx.showToast?.({ title: "IP 格式不正确", icon: "none" });
+          return;
+        }
+        this.serverHost = this.serverHostInput || "127.0.0.1";
+        wx.setStorageSync?.("serverHost", this.serverHost);
+        // reset socket
+        this.ws?.close();
+        this.ws = null;
+        this.netError = null;
+        this.connecting = false;
+        this.screen = "menu";
+      },
+      saveEnabled
+    );
+    this.buttons.push(save);
+    save.draw(this.ctx);
 
     const cancel = new Button(140, 860, 210, 72, "取消", () => (this.screen = "menu"));
     this.buttons.push(cancel);
