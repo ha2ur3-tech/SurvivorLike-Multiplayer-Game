@@ -14,7 +14,13 @@ esbuild
     bundle: true,
     platform: "neutral",
     format: "cjs",
-    target: ["es2020"],
+    // WeChat Mini Game JS runtime (and preview pipeline) may not support optional chaining / nullish coalescing.
+    // Build down to a more compatible target and force transforms.
+    target: ["es2017"],
+    supported: {
+      "optional-chain": false,
+      "nullish-coalescing": false
+    },
     sourcemap: false,
     minify: true,
     outfile: path.resolve(outDir, "bundle.js")
