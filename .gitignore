@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.DS_Store
+
+# WeChat DevTools user files
+project.private.config.json
+
+# WeChat minigame build output
+client/minigame/js/bundle.js
+client/minigame/js/bundle.js.map
+client/minigame/js/phaser.min.js
+client/minigame/js/phaser.runtime.js
+
