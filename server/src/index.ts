@@ -4,6 +4,7 @@ import { Server } from "colyseus";
 import { WebSocketTransport } from "@colyseus/ws-transport";
 import { monitor } from "@colyseus/monitor";
 import { SurvivorRoom } from "./rooms/SurvivorRoom.js";
+import { attachWsLobby } from "./wsLobby.js";
 
 const PORT = Number(process.env.PORT || 2567);
 
@@ -17,6 +18,7 @@ const gameServer = new Server({
 
 gameServer.define("survivor", SurvivorRoom);
 app.use("/colyseus", monitor());
+attachWsLobby(server);
 
 server.listen(PORT, () => {
   // eslint-disable-next-line no-console

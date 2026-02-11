@@ -14,10 +14,10 @@ type PlayerRow = {
 
 type RoomState = {
   code: string;
-  isHost: boolean;
   meReady: boolean;
   players: (PlayerRow | null)[]; // 4 slots
   characterIndex: number;
+  hostId: string;
 };
 
 const LOGICAL_W = 720;
@@ -87,6 +87,10 @@ class App {
   private screen: AppScreen = "menu";
   private joinInput = "";
   private room: RoomState | null = null;
+  private clientId: string | null = null;
+  private ws: import("./net/wsClient").WsClient | null = null;
+  private netError: string | null = null;
+  private connecting = false;
 
   private viewW = 375;
   private viewH = 667;
@@ -117,7 +121,31 @@ class App {
       this.handleTap(p.x, p.y);
     });
 
+    this.applyLaunchQuery(wx.getLaunchOptionsSync?.()?.query);
+    wx.onShow?.((e: any) => this.applyLaunchQuery(e?.query));
+
     this.loop();
+  }
+
+  private serverUrl() {
+    // v0 defaults:
+    // - DevTools: ws://127.0.0.1:2567/ws
+    // - Real phone testing: change to ws://<你的电脑局域网IP>:2567/ws or deploy wss later.
+    const cfg = wx.getStorageSync?.("serverUrl");
+    return (cfg && String(cfg)) || "ws://127.0.0.1:2567/ws";
+  }
+
+  private applyLaunchQuery(query: any) {
+    if (!query) return;
+    const roomCode = query.roomCode ? String(query.roomCode) : "";
+    if (/^\d{6}$/.test(roomCode)) {
+      this.joinInput = roomCode;
+      this.screen = "join";
+      // auto-join once if not already in room
+      if (!this.room && !this.connecting) {
+        this.connectAndJoin(roomCode);
+      }
+    }
   }
 
   private recalcViewport() {
@@ -203,11 +231,23 @@ class App {
     this.ctx.fillText("v0：先把界面与流程跑通（无 Phaser）", LOGICAL_W / 2, 330);
     this.ctx.restore();
 
-    const start = new Button(180, 400, 360, 82, "开始游戏（创建房间）", () => this.createRoom());
+    const start = new Button(180, 400, 360, 82, "开始游戏（创建房间）", () => this.connectAndCreate());
     const join = new Button(180, 510, 360, 82, "加入房间", () => {
       this.joinInput = "";
       this.screen = "join";
     });
+    // net hint
+    this.ctx.save();
+    this.ctx.fillStyle = this.netError ? COLORS.danger : COLORS.muted;
+    this.ctx.font = "500 20px Arial";
+    this.ctx.textAlign = "center";
+    this.ctx.fillText(
+      this.connecting ? "正在连接服务器…" : this.netError ? `网络错误：${this.netError}` : `服务器：${this.serverUrl()}`,
+      LOGICAL_W / 2,
+      650
+    );
+    this.ctx.restore();
+
     this.buttons.push(start, join);
     start.draw(this.ctx);
     join.draw(this.ctx);
@@ -254,7 +294,7 @@ class App {
         label,
         () => {
           if (label === "⌫") this.joinInput = this.joinInput.slice(0, -1);
-          else if (label === "确定") this.joinRoom();
+          else if (label === "确定") this.connectAndJoin(this.joinInput);
           else if (this.joinInput.length < 6) this.joinInput += label;
         },
         enabled
@@ -300,8 +340,14 @@ class App {
     this.ctx.fillText("选择角色", 505, 260);
     this.ctx.restore();
 
-    const left = new Button(355, 480, 64, 64, "<", () => (room.characterIndex = (room.characterIndex + 4) % 5));
-    const right = new Button(591, 480, 64, 64, ">", () => (room.characterIndex = (room.characterIndex + 1) % 5));
+    const left = new Button(355, 480, 64, 64, "<", () => {
+      room.characterIndex = (room.characterIndex + 4) % 5;
+      this.ws?.send({ type: "setCharacter", characterIndex: room.characterIndex });
+    });
+    const right = new Button(591, 480, 64, 64, ">", () => {
+      room.characterIndex = (room.characterIndex + 1) % 5;
+      this.ws?.send({ type: "setCharacter", characterIndex: room.characterIndex });
+    });
     this.buttons.push(left, right);
     left.draw(this.ctx);
     right.draw(this.ctx);
@@ -323,9 +369,9 @@ class App {
     this.ctx.fillText(`角色 ${room.characterIndex + 1}`, cardX + 70, cardY + 70);
     this.ctx.restore();
 
-    // bottom button
-    const label = room.isHost ? "开始游戏" : room.meReady ? "取消准备" : "准备";
-    const enabled = room.isHost ? this.allGuestsReady() : true;
+    const isHost = this.clientId != null && room.hostId === this.clientId;
+    const label = isHost ? "开始游戏" : room.meReady ? "取消准备" : "准备";
+    const enabled = isHost ? this.allGuestsReady() : true;
     const action = new Button(
       330,
       820,
@@ -333,13 +379,14 @@ class App {
       82,
       label,
       () => {
-        if (room.isHost) {
+        if (isHost) {
           if (!this.allGuestsReady()) return;
-          this.screen = "ingame";
+          this.ws?.send({ type: "start" });
         } else {
           room.meReady = !room.meReady;
           const me = room.players.find((p) => p?.isLocal);
           if (me) me.ready = room.meReady;
+          this.ws?.send({ type: "setReady", ready: room.meReady });
         }
       },
       enabled
@@ -348,7 +395,11 @@ class App {
     action.draw(this.ctx);
 
     const back = new Button(40, 40, 160, 64, "返回", () => {
+      this.ws?.send({ type: "leave" });
+      this.ws?.close();
+      this.ws = null;
       this.room = null;
+      this.clientId = null;
       this.screen = "menu";
     });
     this.buttons.push(back);
@@ -421,40 +472,80 @@ class App {
     back.draw(this.ctx);
   }
 
-  private createRoom() {
-    const code = String(Math.floor(100000 + Math.random() * 900000));
-    this.room = {
-      code,
-      isHost: true,
-      meReady: true,
-      characterIndex: 0,
-      players: [
-        { name: "你", ready: true, isLocal: true },
-        null,
-        null,
-        null
-      ]
-    };
-    this.screen = "room";
+  private connectAndCreate() {
+    this.netError = null;
+    this.connecting = true;
+    this.ensureWs();
+    this.ws?.connect();
+    // actual create happens on open (or if already open)
+    this.ws?.send({ type: "create", name: "你" });
   }
 
-  private joinRoom() {
-    const code = this.joinInput;
-    if (code.length !== 6) return;
-    // v0：离线模拟加入。后续接入联机后替换为服务端 join。
-    this.room = {
-      code,
-      isHost: false,
-      meReady: false,
-      characterIndex: 0,
-      players: [
-        { name: "房主", ready: true, isLocal: false },
-        { name: "你", ready: false, isLocal: true },
-        null,
-        null
-      ]
-    };
-    this.screen = "room";
+  private connectAndJoin(code: string) {
+    if (!/^\d{6}$/.test(code)) return;
+    this.netError = null;
+    this.connecting = true;
+    this.ensureWs();
+    this.ws?.connect();
+    this.ws?.send({ type: "join", roomCode: code, name: "你" });
+  }
+
+  private ensureWs() {
+    if (this.ws) return;
+    // Lazy import to avoid circular TS issues
+    const { WsClient } = require("./net/wsClient") as typeof import("./net/wsClient");
+    this.ws = new WsClient(this.serverUrl(), {
+      onOpen: () => {
+        this.connecting = false;
+      },
+      onClose: () => {
+        this.connecting = false;
+      },
+      onError: (err: any) => {
+        this.connecting = false;
+        this.netError = err?.errMsg ? String(err.errMsg) : "连接失败";
+      },
+      onMessage: (msg: any) => this.onServerMessage(msg)
+    });
+  }
+
+  private onServerMessage(msg: any) {
+    if (!msg || typeof msg.type !== "string") return;
+    if (msg.type === "welcome") {
+      this.clientId = String(msg.clientId || "");
+      return;
+    }
+    if (msg.type === "error") {
+      this.netError = String(msg.message || "错误");
+      wx.showToast?.({ title: this.netError, icon: "none" });
+      return;
+    }
+    if (msg.type === "roomState" && msg.room) {
+      const r = msg.room;
+      const players: (PlayerRow | null)[] = (r.players || []).slice(0, 4).map((p: any) => {
+        if (!p) return null;
+        const id = String(p.id || "");
+        return {
+          name: String(p.name || "玩家"),
+          ready: !!p.ready,
+          isLocal: this.clientId != null && id === this.clientId
+        };
+      });
+      const me = players.find((p) => p?.isLocal);
+      this.room = {
+        code: String(r.code || ""),
+        hostId: String(r.hostId || ""),
+        meReady: !!me?.ready,
+        players,
+        characterIndex: clamp(this.room?.characterIndex ?? 0, 0, 4)
+      };
+      this.screen = "room";
+      this.connecting = false;
+
+      if (String(r.phase) === "ingame") {
+        this.screen = "ingame";
+      }
+    }
   }
 
   private allGuestsReady() {

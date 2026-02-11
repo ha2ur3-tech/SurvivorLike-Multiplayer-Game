@@ -5,6 +5,7 @@ const esbuild = require("esbuild");
 const root = path.resolve(__dirname, "..");
 const outDir = path.resolve(root, "minigame", "js");
 
+fs.rmSync(outDir, { recursive: true, force: true });
 fs.mkdirSync(outDir, { recursive: true });
 
 esbuild
